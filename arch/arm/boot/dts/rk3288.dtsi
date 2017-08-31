@@ -996,6 +996,13 @@
 			status = "disabled";
 		};
 
+		mipi_phy_rx0: mipi-phy-rx0 {
+			compatible = "rockchip,rk3288-mipi-dphy";
+			clocks = <&cru SCLK_MIPIDSI_24M>, <&cru PCLK_MIPI_CSI>;
+			clock-names = "dphy-ref", "pclk";
+			status = "disabled";
+		};
+
 		io_domains: io-domains {
 			compatible = "rockchip,rk3288-io-voltage-domain";
 			status = "disabled";
@@ -1102,23 +1109,17 @@
 
 	cif_isp0: cif_isp@ff910000 {
 		compatible = "rockchip,rk3288-cif-isp";
-		rockchip,grf = <&grf>;
-		reg = <0x0 0xff910000 0x0 0x4000>, <0x0 0xff968000 0x0 0x4000>;
-		reg-names = "register", "csihost-register";
-		clocks = <&cru ACLK_ISP>, <&cru HCLK_ISP>,
-			<&cru SCLK_ISP>, <&cru SCLK_ISP_JPE>,
-			<&cru PCLK_MIPI_CSI>, <&cru PCLK_ISP_IN>,
-			<&cru SCLK_MIPIDSI_24M>;
-		clock-names = "aclk_isp", "hclk_isp",
-			"sclk_isp", "sclk_isp_jpe",
-			"pclk_mipi_csi", "pclk_isp_in",
-			"sclk_mipidsi_24m";
-		resets = <&cru SRST_ISP>;
-		reset-names = "rst_isp";
+		reg = <0x0 0xff910000 0x0 0x4000>;
 		interrupts = <GIC_SPI 14 IRQ_TYPE_LEVEL_HIGH>;
-		interrupt-names = "cif_isp10_irq";
+		clocks = <&cru SCLK_ISP>, <&cru ACLK_ISP>,
+			 <&cru HCLK_ISP>, <&cru PCLK_ISP_IN>,
+			 <&cru SCLK_ISP_JPE>;
+		clock-names = "clk_isp", "aclk_isp",
+			      "hclk_isp", "pclk_isp_in",
+			      "sclk_isp_jpe";
+		assigned-clocks = <&cru SCLK_ISP>, <&cru SCLK_ISP_JPE>;
+		assigned-clock-rates = <400000000>, <400000000>;
 		power-domains = <&power RK3288_PD_VIO>;
-		rockchip,isp,iommu-enable = <1>;
 		iommus = <&isp_mmu>;
 		status = "disabled";
 	};
