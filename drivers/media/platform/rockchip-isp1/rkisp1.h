@@ -55,7 +55,6 @@ enum rkisp1_isp_pad {
 	RKISP1_ISP_PAD_SINK_PARAMS,
 	RKISP1_ISP_PAD_SOURCE_PATH,
 	RKISP1_ISP_PAD_SOURCE_STATS,
-	/* TODO: meta data pad ? */
 	RKISP1_ISP_PAD_MAX
 };
 
@@ -97,7 +96,6 @@ struct rkisp1_device {
 	struct rkisp1_isp_params_vdev params_vdev;
 	struct rkisp1_pipeline pipe;
 	struct vb2_alloc_ctx *alloc_ctx;
-	atomic_t poweron_cnt;
 };
 
 /* Clean code starts from here */
@@ -120,6 +118,12 @@ static inline
 struct ispsd_out_fmt *rkisp1_get_ispsd_out_fmt(struct rkisp1_device *isp_dev)
 {
 	return &isp_dev->isp_sdev.out_fmt;
+}
+
+static inline
+struct ispsd_in_fmt *rkisp1_get_ispsd_in_fmt(struct rkisp1_device *isp_dev)
+{
+	return &isp_dev->isp_sdev.in_fmt;
 }
 
 static inline

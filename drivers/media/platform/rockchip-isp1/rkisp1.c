@@ -41,7 +41,6 @@
 #include "regs.h"
 #include "rkisp1.h"
 
-/* TODO: define the isp frame size constrains */
 #define CIF_ISP_INPUT_W_MAX		4032
 #define CIF_ISP_INPUT_H_MAX		3024
 #define CIF_ISP_INPUT_W_MIN		32
@@ -432,7 +431,7 @@ static int rkisp1_isp_start(struct rkisp1_device *dev)
 	       CIF_ISP_CTRL_ISP_INFORM_ENABLE;
 	writel(val, base + CIF_ISP_CTRL);
 
-	/* TODO: Is the 1000us too long?
+	/* XXX: Is the 1000us too long?
 	 * CIF spec says to wait for sufficient time after enabling
 	 * the MIPI interface and before starting the sensor output.
 	 */
@@ -833,6 +832,7 @@ static int rkisp1_isp_sd_set_selection(struct v4l2_subdev *sd,
 				       struct v4l2_subdev_selection *sel)
 {
 	struct rkisp1_isp_subdev *isp_sd = sd_to_isp_sd(sd);
+	struct rkisp1_device *dev = sd_to_isp_dev(sd);
 
 	if (sel->pad != RKISP1_ISP_PAD_SOURCE_PATH &&
 	    sel->pad != RKISP1_ISP_PAD_SINK)
@@ -840,6 +840,9 @@ static int rkisp1_isp_sd_set_selection(struct v4l2_subdev *sd,
 	if (sel->target != V4L2_SEL_TGT_CROP)
 		return -EINVAL;
 
+	v4l2_dbg(1, rkisp1_debug, &dev->v4l2_dev,
+		 "%s: pad: %d sel(%d, %d, %d, %d)\n", __func__, sel->pad,
+		 sel->r.top, sel->r.left, sel->r.width, sel->r.height);
 	rkisp1_isp_sd_try_crop(sd, cfg, sel);
 
 	if (sel->which == V4L2_SUBDEV_FORMAT_TRY) {
@@ -905,18 +908,12 @@ static int rkisp1_isp_sd_s_power(struct v4l2_subdev *sd, int on)
 	struct rkisp1_device *dev = sd_to_isp_dev(sd);
 	int ret;
 
-	v4l2_dbg(1, rkisp1_debug, &dev->v4l2_dev,
-		 "streaming count %d, s_power: %d\n",
-		 atomic_read(&dev->poweron_cnt), on);
+	v4l2_dbg(1, rkisp1_debug, &dev->v4l2_dev, "s_power: %d\n", on);
 
 	if (on) {
 		ret = pm_runtime_get_sync(dev->dev);
 		if (ret < 0)
 			return ret;
-
-		/* TODO: Reset the isp would clear iommu too */
-		/* writel(CIF_IRCL_CIF_SW_RST, dev->base_addr + CIF_IRCL); */
-		/* udelay(1); wait at least 10 module clock cycles */
 
 		rkisp1_config_clk(dev);
 	} else {
@@ -1077,39 +1074,6 @@ void rkisp1_unregister_isp_subdev(struct rkisp1_device *isp_dev)
 	media_entity_cleanup(&sd->entity);
 }
 
-static void rkisp1_hw_restart(struct rkisp1_device *dev)
-{
-	void __iomem *base = dev->base_addr;
-	u32 val;
-
-	writel(CIF_IRCL_MIPI_SW_RST | CIF_IRCL_ISP_SW_RST | CIF_IRCL_MI_SW_RST,
-	       base + CIF_IRCL);
-	writel(0x0, base + CIF_IRCL);
-
-	/* enable mipi interrupts */
-	writel(CIF_MIPI_FRAME_END | CIF_MIPI_ERR_CSI |
-	       CIF_MIPI_ERR_DPHY | CIF_MIPI_SYNC_FIFO_OVFLW(0x03) |
-	       CIF_MIPI_ADD_DATA_OVFLW, base + CIF_MIPI_IMSC);
-
-	writel(0x0, base + CIF_MI_MP_Y_OFFS_CNT_INIT);
-	writel(0x0, base + CIF_MI_MP_CR_OFFS_CNT_INIT);
-	writel(0x0, base + CIF_MI_MP_CB_OFFS_CNT_INIT);
-	writel(0x0, base + CIF_MI_SP_Y_OFFS_CNT_INIT);
-	writel(0x0, base + CIF_MI_SP_CR_OFFS_CNT_INIT);
-	writel(0x0, base + CIF_MI_SP_CB_OFFS_CNT_INIT);
-	val = readl(base + CIF_MI_CTRL);
-	writel(CIF_MI_CTRL_INIT_OFFSET_EN | val, base + CIF_MI_CTRL);
-
-	/* Enable ISP */
-	val = readl(base + CIF_ISP_CTRL);
-	val |= CIF_ISP_CTRL_ISP_CFG_UPD | CIF_ISP_CTRL_ISP_ENABLE |
-	       CIF_ISP_CTRL_ISP_INFORM_ENABLE;
-	writel(val, base + CIF_ISP_CTRL);
-	/* enable MIPI */
-	val = readl(base + CIF_MIPI_CTRL);
-	writel(val | CIF_MIPI_CTRL_OUTPUT_ENA, base + CIF_MIPI_CTRL);
-}
-
 void rkisp1_mipi_isr(unsigned int mis, struct rkisp1_device *dev)
 {
 	struct v4l2_device *v4l2_dev = &dev->v4l2_dev;
@@ -1124,10 +1088,9 @@ void rkisp1_mipi_isr(unsigned int mis, struct rkisp1_device *dev)
 	 * of line state. This time is may be too long and cpu
 	 * is hold in this interrupt.
 	 */
-	if (mis & CIF_MIPI_ERR_CTRL(3)) {
+	if (mis & CIF_MIPI_ERR_CTRL(0x0f)) {
 		val = readl(base + CIF_MIPI_IMSC);
-		/*TODO: 0xf - one bit per lane?*/
-		writel(val | ~CIF_MIPI_ERR_CTRL(0x03), base + CIF_MIPI_IMSC);
+		writel(val | ~CIF_MIPI_ERR_CTRL(0x0f), base + CIF_MIPI_IMSC);
 		dev->isp_sdev.dphy_errctrl_disabled = true;
 	}
 
@@ -1142,7 +1105,7 @@ void rkisp1_mipi_isr(unsigned int mis, struct rkisp1_device *dev)
 		 */
 		if (dev->isp_sdev.dphy_errctrl_disabled) {
 			val = readl(base + CIF_MIPI_IMSC);
-			val |= CIF_MIPI_ERR_CTRL(0x03);
+			val |= CIF_MIPI_ERR_CTRL(0x0f);
 			writel(val, base + CIF_MIPI_IMSC);
 			dev->isp_sdev.dphy_errctrl_disabled = false;
 		}
@@ -1156,7 +1119,6 @@ void rkisp1_isp_isr(unsigned int isp_mis, struct rkisp1_device *dev)
 	void __iomem *base = dev->base_addr;
 	unsigned int isp_mis_tmp = 0;
 	unsigned int isp_err = 0;
-	u32 val;
 
 	if (isp_mis & CIF_ISP_V_START) {
 		riksp1_isp_queue_event_sof(&dev->isp_sdev);
@@ -1168,33 +1130,18 @@ void rkisp1_isp_isr(unsigned int isp_mis, struct rkisp1_device *dev)
 				 isp_mis_tmp);
 	}
 
-	if (isp_mis & (CIF_ISP_DATA_LOSS | CIF_ISP_PIC_SIZE_ERROR)) {
-		if ((isp_mis & CIF_ISP_PIC_SIZE_ERROR)) {
-			/* Clear pic_size_error */
-			writel(CIF_ISP_PIC_SIZE_ERROR, base + CIF_ISP_ICR);
-			isp_err = readl(base + CIF_ISP_ERR);
-			v4l2_err(&dev->v4l2_dev,
-				 "CIF_ISP_PIC_SIZE_ERROR (0x%08x)", isp_err);
-			writel(isp_err, base + CIF_ISP_ERR_CLR);
-		} else if ((isp_mis & CIF_ISP_DATA_LOSS)) {
-			/* Clear data_loss */
-			writel(CIF_ISP_DATA_LOSS, base + CIF_ISP_ICR);
-			v4l2_err(&dev->v4l2_dev, "CIF_ISP_DATA_LOSS\n");
-			writel(CIF_ISP_DATA_LOSS, base + CIF_ISP_ICR);
-		}
-
-		/* TODO: Restart ISP safely */
-		if (0) {
-			val = readl(base + CIF_ISP_CTRL);
-			val &= ~(CIF_ISP_CTRL_ISP_INFORM_ENABLE &
-				CIF_ISP_CTRL_ISP_ENABLE);
-			writel(val, base + CIF_ISP_CTRL);
-			/* isp_update */
-			val = readl(base + CIF_ISP_CTRL);
-			writel(val | CIF_ISP_CTRL_ISP_CFG_UPD, base + CIF_ISP_CTRL);
-			/*TODO: restart hw here is not safe, may cause machine hanging*/
-			rkisp1_hw_restart(dev);
-		}
+	if ((isp_mis & CIF_ISP_PIC_SIZE_ERROR)) {
+		/* Clear pic_size_error */
+		writel(CIF_ISP_PIC_SIZE_ERROR, base + CIF_ISP_ICR);
+		isp_err = readl(base + CIF_ISP_ERR);
+		v4l2_err(&dev->v4l2_dev,
+				"CIF_ISP_PIC_SIZE_ERROR (0x%08x)", isp_err);
+		writel(isp_err, base + CIF_ISP_ERR_CLR);
+	} else if ((isp_mis & CIF_ISP_DATA_LOSS)) {
+		/* Clear data_loss */
+		writel(CIF_ISP_DATA_LOSS, base + CIF_ISP_ICR);
+		v4l2_err(&dev->v4l2_dev, "CIF_ISP_DATA_LOSS\n");
+		writel(CIF_ISP_DATA_LOSS, base + CIF_ISP_ICR);
 	}
 
 	if (isp_mis & CIF_ISP_FRAME_IN) {

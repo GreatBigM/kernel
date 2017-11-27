@@ -43,7 +43,6 @@ struct rkisp1_device;
 
 enum rkisp1_isp_readout_cmd {
 	RKISP1_ISP_READOUT_MEAS,
-	/* TODO: metadata */
 	RKISP1_ISP_READOUT_META,
 };
 

@@ -288,11 +288,9 @@ static void rkisp1_stats_get_bls_meas(struct rkisp1_isp_stats_vdev *stats_vdev,
 				      struct rkisp1_stat_buffer *pbuf)
 {
 	struct rkisp1_device *dev = stats_vdev->dev;
-	struct rkisp1_isp_subdev *sd = &dev->isp_sdev;
-	const struct ispsd_in_fmt *in_fmt = &sd->in_fmt;
+	const struct ispsd_in_fmt *in_fmt = rkisp1_get_ispsd_in_fmt(dev);
 	void __iomem *base = stats_vdev->dev->base_addr;
 
-	/* TODO: get in_fmt */
 	if (in_fmt->bayer_pat == RAW_BGGR) {
 		pbuf->params.ae.bls_val.meas_b =
 			readl(base + CIF_ISP_BLS_A_MEASURED);
@@ -385,6 +383,8 @@ rkisp1_stats_send_measurement(struct rkisp1_isp_stats_vdev *stats_vdev,
 
 	vb2_set_plane_payload(&cur_buf->vb.vb2_buf, 0,
 			      sizeof(struct rkisp1_stat_buffer));
+	cur_buf->vb.sequence = cur_frame_id;
+	cur_buf->vb.timestamp = ns_to_timeval(ktime_get_ns());
 	vb2_buffer_done(&cur_buf->vb.vb2_buf, VB2_BUF_STATE_DONE);
 }
 

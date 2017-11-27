@@ -35,6 +35,7 @@
 #ifndef _RKISP1_COMMON_H
 #define _RKISP1_COMMON_H
 
+#include <linux/mutex.h>
 #include <media/media-device.h>
 #include <media/media-entity.h>
 #include <media/v4l2-ctrls.h>
@@ -83,6 +84,8 @@ struct rkisp1_pipeline;
 struct rkisp1_pipeline {
 	struct media_pipeline pipe;
 	int num_subdevs;
+	atomic_t power_cnt;
+	atomic_t stream_cnt;
 	struct v4l2_subdev *subdevs[RKISP1_PIPELINE_MAX];
 	int (*open)(struct rkisp1_pipeline *p,
 		    struct media_entity *me, bool prepare);

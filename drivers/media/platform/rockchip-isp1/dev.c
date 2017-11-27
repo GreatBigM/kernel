@@ -41,6 +41,7 @@
 #include <linux/pm_runtime.h>
 #include "regs.h"
 #include "rkisp1.h"
+#include "common.h"
 
 struct isp_match_data {
 	const char * const *clks;
@@ -92,19 +93,11 @@ static int __isp_pipeline_prepare(struct rkisp1_pipeline *p,
 
 static int __subdev_set_power(struct v4l2_subdev *sd, int on)
 {
-	int *use_count;
 	int ret;
-
-	v4l2_info(sd, "%d: name %s,on %d\n", __LINE__, sd->name, on);
 
 	if (!sd)
 		return -ENXIO;
 
-	use_count = &sd->entity.use_count;
-	if (on && (*use_count)++ > 0)
-		return 0;
-	else if (!on && (*use_count == 0 || --(*use_count) > 0))
-		return 0;
 	ret = v4l2_subdev_call(sd, core, s_power, on);
 
 	return ret != -ENOIOCTLCMD ? ret : 0;
@@ -147,7 +140,8 @@ static int rkisp1_pipeline_open(struct rkisp1_pipeline *p,
 
 	if (WARN_ON(!p || !me))
 		return -EINVAL;
-
+	if (atomic_inc_return(&p->power_cnt) > 1)
+		return 0;
 	if (prepare)
 		__isp_pipeline_prepare(p, me);
 
@@ -165,6 +159,8 @@ static int rkisp1_pipeline_close(struct rkisp1_pipeline *p)
 {
 	int ret;
 
+	if (atomic_dec_return(&p->power_cnt) > 0)
+		return 0;
 	ret = __isp_pipeline_s_power(p, 0);
 
 	return ret == -ENXIO ? 0 : ret;
@@ -175,6 +171,9 @@ static int rkisp1_pipeline_set_stream(struct rkisp1_pipeline *p, bool on)
 	struct rkisp1_device *dev = container_of(p, struct rkisp1_device, pipe);
 	int i, ret;
 
+	if ((on && atomic_inc_return(&p->stream_cnt) > 1) ||
+	    (!on && atomic_dec_return(&p->stream_cnt) > 0))
+		return 0;
 	if (on)
 		v4l2_subdev_call(&dev->isp_sdev.sd, video, s_stream, true);
 
@@ -218,7 +217,8 @@ static int rkisp1_create_links(struct rkisp1_device *dev)
 			return -ENXIO;
 		}
 
-		ret = media_entity_create_link(&sensor->sd->entity, pad,
+		ret = media_entity_create_link(
+				&sensor->sd->entity, pad,
 				&dev->isp_sdev.sd.entity,
 				RKISP1_ISP_PAD_SINK + s,
 				s ? 0 : MEDIA_LNK_FL_ENABLED);
@@ -319,8 +319,8 @@ static int rkisp1_fwnode_parse(struct device *dev,
 			container_of(asd, struct rkisp1_async_subdev, asd);
 	struct v4l2_fwnode_bus_parallel *bus = &vep->bus.parallel;
 
-	if (vep->bus_type != V4L2_MBUS_BT656 &&
-	    vep->bus_type != V4L2_MBUS_PARALLEL)
+	if (vep->bus_type != V4L2_MBUS_BT656
+	    && vep->bus_type != V4L2_MBUS_PARALLEL)
 		return 0;
 
 	rk_asd->mbus.flags = bus->flags;
@@ -340,8 +340,9 @@ static int isp_subdev_notifier(struct rkisp1_device *isp_dev)
 	struct device *dev = isp_dev->dev;
 	int ret;
 
-	ret = v4l2_async_notifier_parse_fwnode_endpoints(dev, ntf,
-		sizeof(struct rkisp1_async_subdev), rkisp1_fwnode_parse);
+	ret = v4l2_async_notifier_parse_fwnode_endpoints(
+		dev, ntf, sizeof(struct rkisp1_async_subdev),
+		rkisp1_fwnode_parse);
 	if (ret < 0)
 		return ret;
 
@@ -500,7 +501,6 @@ static int rkisp1_plat_probe(struct platform_device *pdev)
 		return -ENOMEM;
 
 	dev_set_drvdata(dev, isp_dev);
-	atomic_set(&isp_dev->poweron_cnt, 0);
 	isp_dev->dev = dev;
 
 	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
@@ -532,6 +532,8 @@ static int rkisp1_plat_probe(struct platform_device *pdev)
 	}
 	isp_dev->clk_size = clk_data->size;
 
+	atomic_set(&isp_dev->pipe.power_cnt, 0);
+	atomic_set(&isp_dev->pipe.stream_cnt, 0);
 	isp_dev->pipe.open = rkisp1_pipeline_open;
 	isp_dev->pipe.close = rkisp1_pipeline_close;
 	isp_dev->pipe.set_stream = rkisp1_pipeline_set_stream;

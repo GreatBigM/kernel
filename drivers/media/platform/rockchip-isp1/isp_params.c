@@ -1182,8 +1182,8 @@ void rkisp1_params_isr(struct rkisp1_isp_params_vdev *params_vdev, u32 isp_mis)
 	new_params = (struct rkisp1_isp_params_cfg *)(cur_buf->vaddr[0]);
 
 	if (isp_mis & CIF_ISP_FRAME) {
-		/* __isp_isr_other_config(params_vdev, new_params); */
-		/* __isp_isr_meas_config(params_vdev, new_params); */
+		__isp_isr_other_config(params_vdev, new_params);
+		__isp_isr_meas_config(params_vdev, new_params);
 		spin_lock(&params_vdev->config_lock);
 		list_del(&cur_buf->queue);
 		spin_unlock(&params_vdev->config_lock);

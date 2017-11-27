@@ -869,6 +869,8 @@ static void update_mi(struct rkisp1_stream *stream)
 			stream->next_buf->buff_addr[RKISP1_PLANE_CR]);
 	} else {
 		/* Throw data to dummy space */
+		v4l2_dbg(1, rkisp1_debug, &stream->ispdev->v4l2_dev,
+			 "%d to dummy buf\n", stream->id);
 		mi_set_y_addr(stream, dummy_buf->dma_addr);
 		mi_set_cb_addr(stream, dummy_buf->dma_addr);
 		mi_set_cr_addr(stream, dummy_buf->dma_addr);
@@ -885,9 +887,14 @@ static void mp_stop_mi(struct rkisp1_stream *stream)
 
 	if (stream->state != RKISP1_STATE_STREAMING)
 		return;
-	/*mp_frame_end_int_disable(base);*/
+	mp_frame_end_int_disable(base);
 	stream->ops->clr_frame_end_int(base);
 	stream->ops->disable_mi(stream);
+	/* FIXME: this make mi disabling becomes effective,
+	 *        but it would update the other's stream's
+	 *        base address and size shadow registers
+	 */
+	force_cfg_update(base);
 }
 
 static void sp_stop_mi(struct rkisp1_stream *stream)
@@ -896,9 +903,14 @@ static void sp_stop_mi(struct rkisp1_stream *stream)
 
 	if (stream->state != RKISP1_STATE_STREAMING)
 		return;
-	/*sp_frame_end_int_disable(base);*/
+	sp_frame_end_int_disable(base);
 	stream->ops->clr_frame_end_int(base);
 	stream->ops->disable_mi(stream);
+	/* FIXME: this make mi disabling becomes effective,
+	 *        but it would update the other's stream's
+	 *        base address and size shadow registers
+	 */
+	force_cfg_update(base);
 }
 
 static struct streams_ops rkisp1_mp_streams_ops = {
@@ -945,7 +957,8 @@ static void rkisp1_stream_stop(struct rkisp1_stream *stream)
 
 static int mi_frame_end(struct rkisp1_stream *stream)
 {
-	struct rkisp1_isp_subdev *isp_sd = &stream->ispdev->isp_sdev;
+	struct rkisp1_device *isp_dev = stream->ispdev;
+	struct rkisp1_isp_subdev *isp_sd = &isp_dev->isp_sdev;
 	struct capture_fmt *isp_fmt = &stream->out_isp_fmt;
 	unsigned long lock_flags = 0;
 	int i = 0;
@@ -1002,18 +1015,21 @@ static int rkisp1_start(struct rkisp1_stream *stream)
 
 	/* Set up an buffer for the next frame */
 	mi_frame_end(stream);
+	/* NOTE: enable_mi() must prior to force_cfg_update(),
+	 * otherwise the first frame is empty?
+	 */
+	stream->ops->enable_mi(stream);
 	/* Update shadow register */
 	force_cfg_update(base);
-	/* Set up an buffer for the next-next frame */
+	/* Set up an buffer for the next-next frame before sensor streaming */
 	mi_frame_end(stream);
 
-	stream->ops->enable_mi(stream);
 	stream->state = RKISP1_STATE_STREAMING;
 
 	return 0;
 }
 
-static int rkisp1_restart(struct rkisp1_stream *stream)
+static int __maybe_unused rkisp1_restart(struct rkisp1_stream *stream)
 {
 	struct rkisp1_device *dev = stream->ispdev;
 	int ret;
@@ -1106,7 +1122,7 @@ static int rkisp1_create_dummy_buf(struct rkisp1_stream *stream)
 	struct rkisp1_dummy_buffer *dummy_buf = &stream->dummy_buf;
 	struct rkisp1_device *dev = stream->ispdev;
 
-	/* get a minimum size */
+	/* get a maximum size */
 	dummy_buf->size = max3(stream->out_fmt.plane_fmt[0].bytesperline *
 		stream->out_fmt.height,
 		stream->out_fmt.plane_fmt[1].sizeimage,
@@ -1142,9 +1158,9 @@ static void rkisp1_stop_streaming(struct vb2_queue *queue)
 	struct rkisp1_buffer *buf;
 	unsigned long lock_flags = 0;
 	int ret;
-	LIST_HEAD(queued_buffers);
 
 	rkisp1_stream_stop(stream);
+	media_entity_pipeline_stop(&node->vdev.entity);
 	ret = dev->pipe.set_stream(&dev->pipe, false);
 	if (ret < 0)
 		return;
@@ -1174,8 +1190,6 @@ static void rkisp1_stop_streaming(struct vb2_queue *queue)
 		return;
 	}
 
-	media_entity_pipeline_stop(&node->vdev.entity);
-
 	rkisp1_destory_dummy_buf(stream);
 }
 
@@ -1192,12 +1206,6 @@ rkisp1_start_streaming(struct vb2_queue *queue, unsigned int count)
 	if (ret < 0)
 		return ret;
 
-	ret = media_entity_pipeline_start(&node->vdev.entity, &dev->pipe.pipe);
-	if (ret < 0) {
-		v4l2_err(&dev->v4l2_dev, "start pipeline failed %d\n", ret);
-		goto err;
-	}
-
 	ret = dev->pipe.open(&dev->pipe, &node->vdev.entity, true);
 	if (ret < 0) {
 		v4l2_err(v4l2_dev, "open cif pipeline failed %d\n", ret);
@@ -1207,17 +1215,6 @@ rkisp1_start_streaming(struct vb2_queue *queue, unsigned int count)
 	if (stream->state != RKISP1_STATE_READY) {
 		v4l2_err(v4l2_dev, "stream not enabled\n");
 		ret = -EBUSY;
-		goto err;
-	}
-
-	ret = stream->ops->check_against(stream);
-	if (ret == -EAGAIN) {
-		struct rkisp1_stream *other;
-
-		other = get_other_stream(stream);
-		if (other)
-			rkisp1_restart(other);
-	} else if (ret == -EBUSY) {
 		goto err;
 	}
 
@@ -1241,6 +1238,13 @@ rkisp1_start_streaming(struct vb2_queue *queue, unsigned int count)
 	ret = dev->pipe.set_stream(&dev->pipe, true);
 	if (ret < 0)
 		goto err;
+
+	ret = media_entity_pipeline_start(&node->vdev.entity, &dev->pipe.pipe);
+	if (ret < 0) {
+		v4l2_err(&dev->v4l2_dev, "start pipeline failed %d\n", ret);
+		goto err;
+	}
+
 	return 0;
 
 err:
@@ -1294,11 +1298,9 @@ static void rkisp1_set_fmt(struct rkisp1_stream *stream,
 		fmt = stream->config->fmts;
 
 	/* do checks on resolution */
-	pixm->width = clamp_t(u32, pixm->width,
-			      stream->config->min_rsz_width,
+	pixm->width = clamp_t(u32, pixm->width, stream->config->min_rsz_width,
 			      stream->config->max_rsz_width);
-	pixm->height = clamp_t(u32, pixm->height,
-			      stream->config->min_rsz_height,
+	pixm->height = clamp_t(u32, pixm->height, stream->config->min_rsz_height,
 			      stream->config->max_rsz_height);
 	pixm->num_planes = fmt->mplanes;
 	pixm->colorspace = rkisp1_get_colorspace(fmt->fmt_type);
@@ -1348,7 +1350,12 @@ static void rkisp1_set_fmt(struct rkisp1_stream *stream,
 		} else {
 			stream->u.mp.raw_enable = (fmt->fmt_type == FMT_BAYER);
 		}
+		v4l2_dbg(1, rkisp1_debug, &stream->ispdev->v4l2_dev,
+			 "%s: stream: %d req(%d, %d) out(%d, %d)\n", __func__,
+			 stream->id, pixm->width, pixm->height,
+			 stream->out_fmt.width, stream->out_fmt.height);
 	}
+
 }
 
 /************************* v4l2_file_operations***************************/
@@ -1547,6 +1554,11 @@ static int rkisp1_s_selection(struct file *file, void *prv,
 		}
 
 		*dcrop = sel->r;
+
+		v4l2_dbg(1, rkisp1_debug, &dev->v4l2_dev,
+			 "%s: stream %d crop(%d, %d, %d, %d)\n",
+			 __func__, stream->id,
+			 dcrop->top, dcrop->left, dcrop->width, dcrop->height);
 	} else if (sel->target == V4L2_SEL_TGT_COMPOSE) {
 		/* CamHal compatibility */
 		sel->r.left = 0;
@@ -1696,8 +1708,7 @@ void rkisp1_mi_isr(struct rkisp1_stream *stream)
 		stream->ops->stop_mi(stream);
 		stream->stop = false;
 		stream->state = RKISP1_STATE_READY;
-		v4l2_dbg(1, rkisp1_debug, &dev->v4l2_dev,
-			 "stream %d stopped\n", stream->id);
+		v4l2_info(&dev->v4l2_dev, "stream %d stopped\n", stream->id);
 		wake_up(&stream->done);
 	}
 }
